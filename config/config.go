@@ -9,6 +9,7 @@ import "github.com/caarlos0/env"
 
 type DHCPConfig struct {
 	OfferWindowSec                int    `env:"OfferWindowSec" envDefault:"1"`
+	MaxOfferWaitTimeSec           int    `env:"MaxOfferWaitTimeSec" envDefault:"10"`
 	HardwareType                  int    `env:"HardwareType" envDefault:"1"`
 	HardwareAddrLen               int    `env:"HardwareAddrLen" envDefault:"6"`
 	InterfaceName                 string `env:"InterfaceName" envDefault:"en0"`

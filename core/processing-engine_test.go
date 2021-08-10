@@ -439,6 +439,54 @@ func TestRebindLease(t *testing.T) {
 	}, l)
 }
 
+func TestDelayedOffer(t *testing.T) {
+	os.Setenv("MaxOfferWaitTimeSec", "5")
+	defer os.Unsetenv("MaxOfferWaitTimeSec")
+
+	leaseReceiveListener := new(LeaseListener)
+	leaseRenewListener := new(LeaseListener)
+	server := test.NewDHCPServer(net.ParseIP("127.0.0.1"), 2024)
+
+	server.AddReplyWithDelay(packet.DHCPPacket{
+		Yiaddr: converter.IP2Array(net.ParseIP("127.0.0.2").To4()),
+	}, time.Millisecond*4500, option.NewIpAddrLeaseTime(200), option.NewMessageTypeOpt(option.DHCPOFFER),
+		option.NewServerIdentifierOpt(net.ParseIP("127.0.0.1").To4()))
+
+	server.AddReply(packet.DHCPPacket{
+		Yiaddr: converter.IP2Array(net.ParseIP("127.0.0.2").To4()),
+	}, option.NewIpAddrLeaseTime(200), option.NewMessageTypeOpt(option.DHCPACK),
+		option.NewServerIdentifierOpt(net.ParseIP("127.0.0.1").To4()))
+
+	server.Listen()
+	dhcpConfig, _ := config.LoadConfig()
+	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
+		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Config: &dhcpConfig,
+	})
+	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
+	processingEngine.AddLeaseRenewedListener(leaseRenewListener.listen)
+	processingEngine.Start()
+
+	time.Sleep(time.Second * 7)
+
+	processingEngine.Stop()
+	server.Stop()
+
+	serverReceivedPackets := server.ReadAllReceivedPackets()
+
+	assert.True(t, serverReceivedPackets[0].Flags != 0)
+	assert.Equal(t, 1, leaseReceiveListener.count)
+	assert.Equal(t, 0, leaseRenewListener.count)
+
+	l := processingEngine.GetLease()
+	assertLease(t, LeaseExpectation{
+		State:            state.BOUND,
+		IpAddr:           net.ParseIP("127.0.0.2").To4(),
+		LeaseDuration:    time.Second * 200,
+		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
+	}, l)
+}
+
 type LeaseListener struct {
 	count int
 }

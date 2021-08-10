@@ -2,13 +2,14 @@ package core
 
 import (
 	"fmt"
-	stack "github.com/emirpasic/gods/stacks/linkedliststack"
+	"github.com/emirpasic/gods/lists"
+	"github.com/emirpasic/gods/lists/arraylist"
 	"github.com/svishnyakoff/dhcpv4/client/state"
 	configuration "github.com/svishnyakoff/dhcpv4/config"
 	. "github.com/svishnyakoff/dhcpv4/lease"
 	"github.com/svishnyakoff/dhcpv4/packet"
 	"github.com/svishnyakoff/dhcpv4/packet/option"
-	transaction "github.com/svishnyakoff/dhcpv4/transaction"
+	"github.com/svishnyakoff/dhcpv4/transaction"
 	netUtils "github.com/svishnyakoff/dhcpv4/util/net-utils"
 	"github.com/svishnyakoff/dhcpv4/util/timers"
 	"log"
@@ -154,40 +155,7 @@ func (p *ProcessingEngine) Discover() {
 
 	p.UpdateState(state.SELECTING)
 
-	// synchronization to collection is done via doneWaitingForOffers channel communication
-	offers := stack.New()
-
-	timeoutMoment := time.Second * time.Duration(config.OfferWindowSec)
-	doneWaiting := time.After(timeoutMoment)
-	doneWaitingForOffers := make(chan int)
-	go func() {
-		for {
-			select {
-			case <-doneWaitingForOffers:
-				return
-			default:
-				responsePacket, err := p.WaitForEventUntil(tx, time.Now().Add(timeoutMoment))
-				if err != nil && os.IsTimeout(err) {
-					continue
-				}
-
-				if err == nil && responsePacket.IsPacketOfType(option.DHCPOFFER) {
-					offers.Push(responsePacket)
-				} else if err != nil {
-					log.Println("error while reading offer packets. " +
-						"ignore error and keep waiting for other offers until reach offer wait timeout")
-				} else {
-					log.Println("have been waiting for offer but got", responsePacket.GetMessageType())
-				}
-			}
-
-		}
-	}()
-
-	<-doneWaiting
-	// "A receive from an unbuffered channel happens before the send on that channel completes."
-	// that means it is guaranteed current goroutine will see results of offer collection goroutine
-	doneWaitingForOffers <- 1
+	offers := p.readOffers(tx)
 
 	if offers.Size() > 0 {
 		var err error
@@ -232,10 +200,10 @@ func (p *ProcessingEngine) onLeaseRenewed() {
 	}
 }
 
-func (p *ProcessingEngine) ProcessOffers(offers *stack.Stack) error {
+func (p *ProcessingEngine) ProcessOffers(offers lists.List) error {
 
 	packetFactory := p.packetFactory()
-	offerPacket, _ := offers.Peek()
+	offerPacket, _ := offers.Get(0)
 	serverIdentifier := offerPacket.(packet.DHCPPacket).GetOption(option.SERVER_IDENTIFIER)
 
 	if serverIdentifier == nil {
@@ -570,6 +538,43 @@ func (p *ProcessingEngine) waitForTimer(t *time.Timer, timeout time.Time) {
 	case <-t.C:
 	case <-p.terminate:
 	case <-time.After(timeout.Sub(time.Now())):
+	}
+}
+
+// readOffers waits for offer commands from server for up to MaxOfferWaitTimeSec seconds.
+// The optimistic expectation of the method is that offers  will be received in OfferWindowSec interval.
+// If at least one offer received during  OfferWindowSec interval,
+// to total execution time will be OfferWindowSec and only offers received during this time interval will be returned.
+// If optimistic expectation fails, the method will wait for first offer for up to MaxOfferWaitTimeSec seconds.
+func (p *ProcessingEngine) readOffers(tx transaction.TxId) (offers lists.List) {
+	offers = arraylist.New()
+	config := p.Config
+	offerTimeoutMoment := time.Now().Add(time.Second * time.Duration(config.MaxOfferWaitTimeSec))
+	offerWindowEndMoment := time.Now().Add(time.Second * time.Duration(config.OfferWindowSec))
+
+	for {
+		if time.Now().After(offerTimeoutMoment) {
+			return
+		}
+
+		responsePacket, err := p.WaitForEventUntil(tx, offerTimeoutMoment)
+		if err != nil && os.IsTimeout(err) {
+			return
+		}
+
+		if err == nil && responsePacket.IsPacketOfType(option.DHCPOFFER) {
+			offers.Add(responsePacket)
+			if time.Now().After(offerWindowEndMoment) {
+				return
+			}
+
+			offerTimeoutMoment = offerWindowEndMoment
+		} else if err != nil {
+			log.Println("error while reading offer packets.", err)
+			return
+		} else {
+			log.Println("have been waiting for offer but got", responsePacket.GetMessageType())
+		}
 	}
 }
 
