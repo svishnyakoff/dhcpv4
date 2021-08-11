@@ -212,12 +212,37 @@ func (o DHCPOption) GetDataAsIP4() net.IP {
 	return o.GetRawOptionValue()
 }
 
+func (o DHCPOption) GetDataAsIP4Slice() []net.IP {
+	rawData := o.GetDataAsLice(4)
+
+	res := make([]net.IP, 0, 10)
+	for _, el := range rawData {
+		res = append(res, el)
+	}
+
+	return res
+}
+
 func (o DHCPOption) GetDataAsSecDuration() time.Duration {
 	return time.Duration(binary.BigEndian.Uint32(o.GetRawOptionValue())) * time.Second
 }
 
 func (o DHCPOption) GetRawOptionValue() []byte {
 	return o.Data[2:]
+}
+
+func (o DHCPOption) GetDataAsIpMask() net.IPMask {
+	return o.Data[2:]
+}
+
+func (o DHCPOption) GetDataAsLice(chunk int) [][]byte {
+	res := make([][]byte, 0, 10)
+
+	for i := 2; i < len(o.Data); i += chunk {
+		res = append(res, o.Data[i:i+chunk])
+	}
+
+	return res
 }
 
 type MessageType int

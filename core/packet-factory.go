@@ -1,8 +1,9 @@
-package packet
+package core
 
 import (
 	. "github.com/svishnyakoff/dhcpv4/config"
 	. "github.com/svishnyakoff/dhcpv4/lease"
+	. "github.com/svishnyakoff/dhcpv4/packet"
 	"github.com/svishnyakoff/dhcpv4/packet/option"
 	. "github.com/svishnyakoff/dhcpv4/transaction"
 	"github.com/svishnyakoff/dhcpv4/util/converter"

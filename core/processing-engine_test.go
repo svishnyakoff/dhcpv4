@@ -2,7 +2,6 @@ package core
 
 import (
 	"github.com/stretchr/testify/assert"
-	"github.com/svishnyakoff/dhcpv4/client/state"
 	"github.com/svishnyakoff/dhcpv4/lease"
 	"github.com/svishnyakoff/dhcpv4/util/converter"
 	netUtils "github.com/svishnyakoff/dhcpv4/util/net-utils"
@@ -35,7 +34,7 @@ func TestHappyPathToGetLease(t *testing.T) {
 
 	server.Listen()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &config.GlobalDHCPConfig,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
@@ -55,7 +54,7 @@ func TestHappyPathToGetLease(t *testing.T) {
 
 	l := processingEngine.GetLease()
 	assertLease(t, LeaseExpectation{
-		State:            state.BOUND,
+		State:            lease.BOUND,
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		LeaseDuration:    time.Second * 200,
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
@@ -80,14 +79,14 @@ func TestClientToRetryRequest(t *testing.T) {
 	server.Listen()
 	conf, _ := config.LoadConfig()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &conf,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
 	processingEngine.AddLeaseRenewedListener(leaseRenewListener.listen)
 	processingEngine.Start()
 
-	packetFactory := packet.DHCPPacketFactory{Config: conf}
+	packetFactory := DHCPPacketFactory{Config: conf}
 
 	time.Sleep(time.Second * 9)
 
@@ -115,7 +114,7 @@ func TestClientToRetryRequest(t *testing.T) {
 	}, serverReceivedPackets)
 
 	assertLease(t, LeaseExpectation{
-		State:  state.INIT,
+		State:  lease.INIT,
 		IpAddr: l.IpAddr,
 	}, l)
 
@@ -137,7 +136,7 @@ func TestRenewLeaseAfterReboot(t *testing.T) {
 	server.Listen()
 	conf, _ := config.LoadConfig()
 	lizz := lease.DHCPLease{
-		State:            state.BOUND, // client itself should switch BOUND to INIT_REBOOT state during boot
+		State:            lease.BOUND, // client itself should switch BOUND to INIT_REBOOT state during boot
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
 		LeaseInitTime:    time.Now(),
@@ -146,7 +145,7 @@ func TestRenewLeaseAfterReboot(t *testing.T) {
 		T2:               75 * time.Second,
 	}
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &conf,
 		Lease:  &lizz,
 	})
@@ -154,7 +153,7 @@ func TestRenewLeaseAfterReboot(t *testing.T) {
 	processingEngine.AddLeaseRenewedListener(leaseRenewListener.listen)
 	processingEngine.Start()
 
-	packetFactory := packet.DHCPPacketFactory{Config: conf}
+	packetFactory := DHCPPacketFactory{Config: conf}
 
 	time.Sleep(time.Second * 2)
 
@@ -178,7 +177,7 @@ func TestRenewLeaseAfterReboot(t *testing.T) {
 		*requestPacket,
 	}, serverReceivedPackets)
 
-	assert.Equal(t, state.BOUND, l.State)
+	assert.Equal(t, lease.BOUND, l.State)
 	assert.Equal(t, net.ParseIP("127.0.0.2").To4(), l.IpAddr)
 	assert.Equal(t, net.ParseIP("127.0.0.1").To4(), l.ServerIdentifier)
 	assert.Equal(t, 200*time.Second, l.LeaseDuration)
@@ -205,7 +204,7 @@ func TestRenewAfterRebootFailedAndThenRequestNewLease(t *testing.T) {
 	server.Listen()
 	conf, _ := config.LoadConfig()
 	lizz := lease.DHCPLease{
-		State:            state.BOUND, // client itself should switch BOUND to INIT_REBOOT state during boot
+		State:            lease.BOUND, // client itself should switch BOUND to INIT_REBOOT state during boot
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
 		LeaseInitTime:    time.Now(),
@@ -214,7 +213,7 @@ func TestRenewAfterRebootFailedAndThenRequestNewLease(t *testing.T) {
 		T2:               75 * time.Second,
 	}
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &conf,
 		Lease:  &lizz,
 	})
@@ -222,7 +221,7 @@ func TestRenewAfterRebootFailedAndThenRequestNewLease(t *testing.T) {
 	processingEngine.AddLeaseRenewedListener(leaseRenewListener.listen)
 	processingEngine.Start()
 
-	packetFactory := packet.DHCPPacketFactory{Config: conf}
+	packetFactory := DHCPPacketFactory{Config: conf}
 
 	time.Sleep(time.Second * 5)
 
@@ -243,7 +242,7 @@ func TestRenewAfterRebootFailedAndThenRequestNewLease(t *testing.T) {
 	assert.Equal(t, option.DHCPDISCOVER, serverReceivedPackets[1].GetMessageType())
 	assert.Equal(t, option.DHCPREQUEST, serverReceivedPackets[2].GetMessageType())
 
-	assert.Equal(t, state.BOUND, l.State)
+	assert.Equal(t, lease.BOUND, l.State)
 	assert.Equal(t, net.ParseIP("127.0.0.3").To4(), l.IpAddr)
 	assert.Equal(t, net.ParseIP("127.0.0.1").To4(), l.ServerIdentifier)
 	assert.Equal(t, 300*time.Second, l.LeaseDuration)
@@ -280,14 +279,14 @@ func TestReceiveSeveralOffers(t *testing.T) {
 
 	dhcpConfig, _ := config.LoadConfig()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &dhcpConfig,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
 	processingEngine.AddLeaseRenewedListener(leaseRenewListener.listen)
 	processingEngine.Start()
 
-	packetFactory := packet.DHCPPacketFactory{Config: dhcpConfig}
+	packetFactory := DHCPPacketFactory{Config: dhcpConfig}
 
 	time.Sleep(time.Second * 5)
 
@@ -312,7 +311,7 @@ func TestReceiveSeveralOffers(t *testing.T) {
 	l := processingEngine.GetLease()
 	assert.Equal(t, 1, leaseReceiveListener.count)
 	assert.Equal(t, 0, leaseRenewListener.count)
-	assert.Equal(t, state.BOUND, l.State)
+	assert.Equal(t, lease.BOUND, l.State)
 
 	assert.ElementsMatch(t, []packet.DHCPPacket{
 		*discoverPacket, *requestPacket,
@@ -350,7 +349,7 @@ func TestRenewingLease(t *testing.T) {
 
 	server.Listen()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &config.GlobalDHCPConfig,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
@@ -373,7 +372,7 @@ func TestRenewingLease(t *testing.T) {
 
 	l := processingEngine.GetLease()
 	assertLease(t, LeaseExpectation{
-		State:            state.BOUND,
+		State:            lease.BOUND,
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		LeaseDuration:    time.Second * 300,
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
@@ -408,7 +407,7 @@ func TestRebindLease(t *testing.T) {
 
 	server.Listen()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &config.GlobalDHCPConfig,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
@@ -432,7 +431,7 @@ func TestRebindLease(t *testing.T) {
 
 	l := processingEngine.GetLease()
 	assertLease(t, LeaseExpectation{
-		State:            state.BOUND,
+		State:            lease.BOUND,
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		LeaseDuration:    time.Second * 300,
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
@@ -460,7 +459,7 @@ func TestDelayedOffer(t *testing.T) {
 	server.Listen()
 	dhcpConfig, _ := config.LoadConfig()
 	processingEngine := NewProcessingEngine(ProcessingEngineInitProps{
-		Client: &DHCPClient{serverPort: 2024, useMulticast: true},
+		Client: &UdpClient{serverPort: 2024, useMulticast: true},
 		Config: &dhcpConfig,
 	})
 	processingEngine.AddLeaseReceivedListener(leaseReceiveListener.listen)
@@ -480,7 +479,7 @@ func TestDelayedOffer(t *testing.T) {
 
 	l := processingEngine.GetLease()
 	assertLease(t, LeaseExpectation{
-		State:            state.BOUND,
+		State:            lease.BOUND,
 		IpAddr:           net.ParseIP("127.0.0.2").To4(),
 		LeaseDuration:    time.Second * 200,
 		ServerIdentifier: net.ParseIP("127.0.0.1").To4(),
@@ -507,7 +506,7 @@ func assertLease(t *testing.T, expectation LeaseExpectation, l lease.DHCPLease) 
 }
 
 type LeaseExpectation struct {
-	State            state.State
+	State            lease.State
 	IpAddr           net.IP
 	Dns              net.IP
 	SubnetMask       net.IPMask

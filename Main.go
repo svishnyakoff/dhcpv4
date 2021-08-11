@@ -1,4 +1,4 @@
-package main
+package dhcpv4
 
 import (
 	"github.com/svishnyakoff/dhcpv4/core"

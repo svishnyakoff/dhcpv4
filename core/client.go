@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-type DHCPClient struct {
+type UdpClient struct {
 	port         int
 	conn         *net.UDPConn
 	serverIp     net.IP // field exclusively for test purposes to point client to local test server
@@ -15,7 +15,7 @@ type DHCPClient struct {
 	useMulticast bool   // if set to true will multicast packets to server instead of broadcast
 }
 
-func (c *DHCPClient) Listen() {
+func (c *UdpClient) Listen() error {
 	clientPort := c.port
 
 	if c.port == 0 {
@@ -29,20 +29,21 @@ func (c *DHCPClient) Listen() {
 
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	c.conn = conn
 	log.Println("Listening for dhcp commands from server")
+	return nil
 }
 
-func (c *DHCPClient) Stop() {
+func (c *UdpClient) Stop() {
 	if err := c.conn.Close(); err != nil {
 		log.Println("Could not stop client gracefully", err)
 	}
 }
 
-func (c *DHCPClient) Send(packet DHCPPacket, addr net.IP) error {
+func (c *UdpClient) Send(packet DHCPPacket, addr net.IP) error {
 	if c.useMulticast && addr.To4().Equal(net.IPv4bcast) {
 		addr = net.IPv4(224, 0, 0, 1)
 	}

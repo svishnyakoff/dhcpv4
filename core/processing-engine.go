@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/emirpasic/gods/lists"
 	"github.com/emirpasic/gods/lists/arraylist"
-	"github.com/svishnyakoff/dhcpv4/client/state"
 	configuration "github.com/svishnyakoff/dhcpv4/config"
 	. "github.com/svishnyakoff/dhcpv4/lease"
 	"github.com/svishnyakoff/dhcpv4/packet"
@@ -28,7 +27,7 @@ func (d decodeError) Error() string {
 }
 
 type ProcessingEngine struct {
-	Client                 *DHCPClient
+	Client                 *UdpClient
 	Config                 configuration.DHCPConfig
 	Lease                  DHCPLease
 	lock                   *sync.Mutex
@@ -41,14 +40,14 @@ type ProcessingEngine struct {
 }
 
 type ProcessingEngineInitProps struct {
-	Client *DHCPClient
+	Client *UdpClient
 	Config *configuration.DHCPConfig
 	Lease  *DHCPLease
 }
 
 func NewProcessingEngine(initProps ProcessingEngineInitProps) *ProcessingEngine {
 	if initProps.Client == nil {
-		initProps.Client = &DHCPClient{}
+		initProps.Client = &UdpClient{}
 	}
 
 	if initProps.Lease == nil {
@@ -98,9 +97,13 @@ func (p *ProcessingEngine) Stop() {
 	close(p.terminate)
 }
 
-func (p *ProcessingEngine) Start() {
+func (p *ProcessingEngine) Start() error {
 	client := p.Client
-	client.Listen()
+	err := client.Listen()
+
+	if err != nil {
+		return err
+	}
 
 	// todo The client SHOULD wait a random time between one and ten seconds to
 	//   desynchronize the use of DHCP at startup.
@@ -109,18 +112,18 @@ func (p *ProcessingEngine) Start() {
 	processInput := func() {
 
 		switch p.Lease.State {
-		case state.INIT:
+		case INIT:
 			p.Discover()
-		case state.BOUND:
+		case BOUND:
 			renewTime := timers.SafeReset(p.renewTimer, p.Lease.DurationUntilRenew())
 			rebindTime := timers.SafeReset(p.rebindTimer, p.Lease.DurationUntilRebind())
 			log.Println("renew is scheduled in", renewTime)
 			log.Println("rebind is scheduled in", rebindTime)
 			p.RenewOrRebindLease()
-		case state.INIT_REBOOT:
+		case INIT_REBOOT:
 			p.RenewAfterReboot()
-		case state.RENEWING, state.REBINDING, state.REBOOTING:
-			p.UpdateState(state.INIT_REBOOT)
+		case RENEWING, REBINDING, REBOOTING:
+			p.UpdateState(INIT_REBOOT)
 		}
 	}
 
@@ -136,6 +139,8 @@ func (p *ProcessingEngine) Start() {
 			}
 		}
 	}()
+
+	return nil
 }
 
 func (p *ProcessingEngine) Discover() {
@@ -153,7 +158,7 @@ func (p *ProcessingEngine) Discover() {
 		return
 	}
 
-	p.UpdateState(state.SELECTING)
+	p.UpdateState(SELECTING)
 
 	offers := p.readOffers(tx)
 
@@ -171,13 +176,13 @@ func (p *ProcessingEngine) Discover() {
 		}
 
 		log.Printf("offer was not ack by server after %d attempts.\n", i)
-		p.UpdateState(state.INIT)
+		p.UpdateState(INIT)
 		p.onLeaseAcquisitionFailure()
 		return
 	}
 
 	log.Println("DHCP client did not receive any offer during time interval:", config.OfferWindowSec, "sec")
-	p.UpdateState(state.INIT)
+	p.UpdateState(INIT)
 	p.onLeaseAcquisitionFailure()
 }
 
@@ -218,7 +223,7 @@ func (p *ProcessingEngine) ProcessOffers(offers lists.List) error {
 		return err
 	}
 
-	p.UpdateState(state.REQUESTING)
+	p.UpdateState(REQUESTING)
 
 	var waitForAck func() error
 
@@ -241,7 +246,7 @@ func (p *ProcessingEngine) ProcessOffers(offers lists.List) error {
 			if err = p.FinalizeOffer(&ack, requestTime); err != nil {
 				return err
 			}
-			p.UpdateState(state.BOUND)
+			p.UpdateState(BOUND)
 			p.onLeaseReceived()
 		}
 
@@ -265,11 +270,22 @@ func (p *ProcessingEngine) FinalizeOffer(ack *packet.DHCPPacket, requestTime tim
 			net.IP(ack.Yiaddr[:]))
 	}
 
-	serverIdentifier := ack.GetOption(option.SERVER_IDENTIFIER)
-	p.Lease.ServerIdentifier = serverIdentifier.GetDataAsIP4()
+	p.Lease.Offer = *ack
+	p.Lease.ServerIdentifier = ack.GetOption(option.SERVER_IDENTIFIER).GetDataAsIP4()
 	p.Lease.IpAddr = ack.Yiaddr[:]
 	p.Lease.LeaseDuration = ack.GetOption(option.IP_ADDR_LEASE_TIME).GetDataAsSecDuration()
 	p.Lease.LeaseInitTime = requestTime
+
+	if subnet := ack.GetOption(option.SUBNET_MASK); subnet != nil {
+		p.Lease.SubnetMask = subnet.GetDataAsIpMask()
+	}
+
+	if o := ack.GetOption(option.DOMAIN_NAME_SERVER_OPT); o != nil {
+		dns := option.DnsParser(*o)
+		if len(dns) > 0 {
+			p.Lease.Dns = dns[0]
+		}
+	}
 
 	if t1 := ack.GetOption(option.RENEWAL_TIME_VALUE); t1 != nil {
 		p.Lease.T1 = t1.GetDataAsSecDuration()
@@ -286,11 +302,11 @@ func (p *ProcessingEngine) FinalizeOffer(ack *packet.DHCPPacket, requestTime tim
 	return nil
 }
 
-func (p *ProcessingEngine) UpdateState(newState state.State) {
+func (p *ProcessingEngine) UpdateState(newState State) {
 	log.Println("State change:", p.Lease.State, "->", newState)
 	p.Lease.State = newState
 	switch newState {
-	case state.INIT:
+	case INIT:
 		p.Lease.ResetLease()
 	}
 }
@@ -299,7 +315,7 @@ func (p *ProcessingEngine) RenewAfterReboot() {
 	lease := p.Lease
 	packetFactory := p.packetFactory()
 
-	if lease.State != state.INIT_REBOOT {
+	if lease.State != INIT_REBOOT {
 		log.Println("Cannot renew the lease from state", lease.State)
 		return
 	}
@@ -309,7 +325,7 @@ func (p *ProcessingEngine) RenewAfterReboot() {
 
 	if err := p.Client.Send(*requestPacket, net.IPv4bcast); err != nil {
 		log.Printf("request failed when tried to renew lease: %v\n", err)
-		p.UpdateState(state.INIT)
+		p.UpdateState(INIT)
 		return
 	}
 
@@ -320,50 +336,50 @@ func (p *ProcessingEngine) RenewAfterReboot() {
 func (p *ProcessingEngine) handleRenewResponse(response packet.DHCPPacket, requestTime time.Time, err error) {
 	if err != nil {
 		log.Println("error reading response for renew", err)
-		p.UpdateState(state.INIT)
+		p.UpdateState(INIT)
 		return
 	}
 
 	if response.IsPacketOfType(option.DHCPNAK) {
 		log.Println("server declined to renew lease")
-		p.UpdateState(state.INIT)
+		p.UpdateState(INIT)
 		return
 	} else if response.IsPacketOfType(option.DHCPACK) {
 		if err := p.FinalizeOffer(&response, requestTime); err != nil {
 			log.Println("Probably BUG: it seems some other host within local network has the same IP address as"+
 				" the Lease's IP address we just renewed", err)
-			p.UpdateState(state.INIT)
+			p.UpdateState(INIT)
 			return
 		}
 
 		log.Println("successfully renewed lease")
 		p.onLeaseRenewed()
-		p.UpdateState(state.BOUND)
+		p.UpdateState(BOUND)
 		return
 	}
 }
 
 func (p *ProcessingEngine) RenewOrRebindLease() {
-	var s state.State = 0
-	var renewed bool = false
+	var s State = 0
+	var renewed = false
 
 	if !p.Lease.IsRenewPeriodExpired() {
 		s, renewed = p.RenewLease()
 	}
 
-	if renewed || s == state.INIT {
+	if renewed || s == INIT {
 		return
 	}
 
 	if !p.Lease.IsRebindPeriodExpired() {
 		p.RebindLease()
 	} else {
-		p.UpdateState(state.INIT)
+		p.UpdateState(INIT)
 	}
 
 }
 
-func (p *ProcessingEngine) RenewLease() (state.State, bool) {
+func (p *ProcessingEngine) RenewLease() (State, bool) {
 	p.waitForTimer(p.renewTimer, p.Lease.GetRebindMoment())
 	if p.stopped || p.Lease.IsRenewPeriodExpired() {
 		return p.Lease.State, false
@@ -384,7 +400,7 @@ func (p *ProcessingEngine) RenewLease() (state.State, bool) {
 			log.Printf("request failed when tried to renew lease: %v\n", err)
 		}
 
-		p.UpdateState(state.RENEWING)
+		p.UpdateState(RENEWING)
 
 		response, err := p.WaitForEvent(tx, time.Second)
 
@@ -396,20 +412,20 @@ func (p *ProcessingEngine) RenewLease() (state.State, bool) {
 
 		if response.IsPacketOfType(option.DHCPNAK) {
 			log.Println("server declined to renew lease")
-			p.UpdateState(state.INIT)
-			return state.INIT, false
+			p.UpdateState(INIT)
+			return INIT, false
 		} else if response.IsPacketOfType(option.DHCPACK) {
 			err := p.FinalizeOffer(&response, requestTime)
 			if err != nil {
 				log.Println("Probably BUG: it seems some other host within local network has the same IP address as"+
 					" the Lease's IP address we just renewed", err)
-				p.UpdateState(state.INIT)
-				return state.INIT, false
+				p.UpdateState(INIT)
+				return INIT, false
 			} else {
 				log.Println("successfully renewed lease")
-				p.UpdateState(state.BOUND)
+				p.UpdateState(BOUND)
 				p.onLeaseRenewed()
-				return state.BOUND, true
+				return BOUND, true
 			}
 		}
 	}
@@ -417,7 +433,7 @@ func (p *ProcessingEngine) RenewLease() (state.State, bool) {
 	return p.Lease.State, false
 }
 
-func (p *ProcessingEngine) RebindLease() (state.State, bool) {
+func (p *ProcessingEngine) RebindLease() (State, bool) {
 	p.waitForTimer(p.rebindTimer, p.Lease.GetLeaseExpirationMoment())
 	if p.stopped || p.Lease.IsRebindPeriodExpired() {
 		return p.Lease.State, false
@@ -436,7 +452,7 @@ func (p *ProcessingEngine) RebindLease() (state.State, bool) {
 			log.Printf("request failed when tried to rebind lease: %v\n", err)
 		}
 
-		p.UpdateState(state.REBINDING)
+		p.UpdateState(REBINDING)
 
 		response, err := p.WaitForEvent(tx, time.Second)
 
@@ -447,20 +463,20 @@ func (p *ProcessingEngine) RebindLease() (state.State, bool) {
 
 		if response.IsPacketOfType(option.DHCPNAK) {
 			log.Println("server declined to rebind lease")
-			p.UpdateState(state.INIT)
-			return state.INIT, false
+			p.UpdateState(INIT)
+			return INIT, false
 		} else if response.IsPacketOfType(option.DHCPACK) {
 			err := p.FinalizeOffer(&response, requestTime)
 			if err != nil {
 				log.Println("Probably BUG: it seems some other host within local network has the same IP address as"+
 					" the Lease's IP address we just renewed", err)
-				p.UpdateState(state.INIT)
-				return state.INIT, false
+				p.UpdateState(INIT)
+				return INIT, false
 			} else {
 				log.Println("successfully rebind lease")
-				p.UpdateState(state.BOUND)
+				p.UpdateState(BOUND)
 				p.onLeaseRenewed()
-				return state.BOUND, true
+				return BOUND, true
 			}
 		}
 	}
@@ -468,8 +484,8 @@ func (p *ProcessingEngine) RebindLease() (state.State, bool) {
 	return p.Lease.State, false
 }
 
-func (p *ProcessingEngine) packetFactory() *packet.DHCPPacketFactory {
-	return &packet.DHCPPacketFactory{Config: p.Config}
+func (p *ProcessingEngine) packetFactory() *DHCPPacketFactory {
+	return &DHCPPacketFactory{Config: p.Config}
 }
 
 func (p *ProcessingEngine) WaitForEvent(tx transaction.TxId, timeout time.Duration) (packet.DHCPPacket, error) {
@@ -527,8 +543,8 @@ func (p *ProcessingEngine) readPacket(timeout time.Time) (packet.DHCPPacket, err
 
 func (p *ProcessingEngine) normalizeStateAfterStart() {
 	switch p.Lease.State {
-	case state.INIT_REBOOT, state.BOUND, state.RENEWING, state.REBINDING, state.REBOOTING, state.SELECTING, state.REQUESTING:
-		p.UpdateState(state.INIT_REBOOT)
+	case INIT_REBOOT, BOUND, RENEWING, REBINDING, REBOOTING, SELECTING, REQUESTING:
+		p.UpdateState(INIT_REBOOT)
 	}
 }
 

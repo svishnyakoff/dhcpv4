@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/go-ini/ini"
-	"github.com/svishnyakoff/dhcpv4/client/state"
+	"github.com/svishnyakoff/dhcpv4/packet"
 	netUtils "github.com/svishnyakoff/dhcpv4/util/net-utils"
 	"log"
 	"net"
@@ -14,7 +14,7 @@ import (
 )
 
 type DHCPLease struct {
-	State            state.State
+	State            State
 	IpAddr           net.IP
 	Dns              net.IP
 	SubnetMask       net.IPMask
@@ -23,6 +23,7 @@ type DHCPLease struct {
 	LeaseDuration    time.Duration
 	T1               time.Duration
 	T2               time.Duration
+	Offer            packet.DHCPPacket
 }
 
 var initPrivateAddr sync.Once
@@ -34,7 +35,7 @@ func (l *DHCPLease) ResetLease() {
 		autoPrivateAddr = &t
 	})
 
-	l.State = state.INIT
+	l.State = INIT
 	l.IpAddr = *autoPrivateAddr
 	l.Dns = nil
 	l.SubnetMask = nil
@@ -53,7 +54,7 @@ func NewDHCPLease() DHCPLease {
 	})
 
 	return DHCPLease{
-		State:  state.INIT,
+		State:  INIT,
 		IpAddr: *autoPrivateAddr,
 	}
 }
@@ -75,7 +76,7 @@ func LoadLease() DHCPLease {
 
 	l := DHCPLease{}
 
-	l.State = state.Parse(cfg.Section("").Key("state").In("INIT", state.StringCandidates()))
+	l.State = Parse(cfg.Section("").Key("state").In("INIT", StringCandidates()))
 	l.IpAddr = net.ParseIP(cfg.Section("").Key("ip").String()).To4()
 	l.Dns = net.ParseIP(cfg.Section("").Key("dns").String()).To4()
 	l.SubnetMask, _ = hex.DecodeString(cfg.Section("").Key("subnet.mask").String())
